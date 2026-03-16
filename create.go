@@ -1,0 +1,271 @@
+package asyncapi
+
+import (
+	"context"
+	"encoding/json"
+	"fmt"
+	"io"
+	"net/http"
+	"os"
+	"sort"
+	"strings"
+	"time"
+
+	openbindings "github.com/openbindings/openbindings-go"
+	"gopkg.in/yaml.v3"
+)
+
+const FormatToken = "asyncapi@^3.0.0"
+
+const DefaultSourceName = "asyncapi"
+
+func createInterface(_ context.Context, in *openbindings.CreateInput) (*openbindings.Interface, error) {
+	if len(in.Sources) == 0 {
+		return nil, &openbindings.ExecuteError{Code: "no_sources", Message: "no sources provided"}
+	}
+	src := in.Sources[0]
+
+	doc, err := loadDocument(src.Location, src.Content)
+	if err != nil {
+		return nil, fmt.Errorf("load AsyncAPI document: %w", err)
+	}
+
+	formatVersion := openbindings.DetectFormatVersion(doc.AsyncAPI)
+
+	iface := openbindings.Interface{
+		OpenBindings: openbindings.MaxTestedVersion,
+		Name:         doc.Info.Title,
+		Version:      doc.Info.Version,
+		Description:  doc.Info.Description,
+		Operations:   map[string]openbindings.Operation{},
+		Bindings:     map[string]openbindings.BindingEntry{},
+		Sources: map[string]openbindings.Source{
+			DefaultSourceName: {
+				Format:   "asyncapi@" + formatVersion,
+				Location: src.Location,
+			},
+		},
+	}
+
+	if in.Name != "" {
+		iface.Name = in.Name
+	}
+	if in.Version != "" {
+		iface.Version = in.Version
+	}
+	if in.Description != "" {
+		iface.Description = in.Description
+	}
+
+	usedKeys := map[string]bool{}
+
+	opIDs := make([]string, 0, len(doc.Operations))
+	for opID := range doc.Operations {
+		opIDs = append(opIDs, opID)
+	}
+	sort.Strings(opIDs)
+
+	for _, opID := range opIDs {
+		asyncOp := doc.Operations[opID]
+		opKey := openbindings.UniqueKey(openbindings.SanitizeKey(opID), usedKeys)
+		usedKeys[opKey] = true
+
+		obiOp := openbindings.Operation{
+			Description: operationDescription(asyncOp),
+		}
+
+		if len(asyncOp.Tags) > 0 {
+			for _, tag := range asyncOp.Tags {
+				obiOp.Tags = append(obiOp.Tags, tag.Name)
+			}
+		}
+
+		switch asyncOp.Action {
+		case "receive":
+			obiOp.Kind = openbindings.OperationKindEvent
+			payload := resolveOperationPayload(doc, asyncOp)
+			if payload != nil {
+				obiOp.Payload = payload
+			}
+		case "send":
+			obiOp.Kind = openbindings.OperationKindMethod
+			inputPayload := resolveOperationPayload(doc, asyncOp)
+			if inputPayload != nil {
+				obiOp.Input = inputPayload
+			}
+			if asyncOp.Reply != nil {
+				outputPayload := resolveReplyPayload(doc, asyncOp.Reply)
+				if outputPayload != nil {
+					obiOp.Output = outputPayload
+				}
+			}
+		default:
+			obiOp.Kind = openbindings.OperationKindMethod
+		}
+
+		iface.Operations[opKey] = obiOp
+
+		ref := "#/operations/" + opID
+		bindingKey := opKey + "." + DefaultSourceName
+		iface.Bindings[bindingKey] = openbindings.BindingEntry{
+			Operation: opKey,
+			Source:    DefaultSourceName,
+			Ref:       ref,
+		}
+	}
+
+	return &iface, nil
+}
+
+func loadDocument(location string, content any) (*Document, error) {
+	data, err := sourceToBytes(location, content)
+	if err != nil {
+		return nil, err
+	}
+
+	var doc Document
+
+	if isJSON(data) {
+		if err := json.Unmarshal(data, &doc); err != nil {
+			return nil, fmt.Errorf("parse AsyncAPI JSON: %w", err)
+		}
+	} else {
+		if err := yaml.Unmarshal(data, &doc); err != nil {
+			return nil, fmt.Errorf("parse AsyncAPI YAML: %w", err)
+		}
+	}
+
+	if !strings.HasPrefix(doc.AsyncAPI, "3.") {
+		return nil, fmt.Errorf("unsupported AsyncAPI version %q (expected 3.x)", doc.AsyncAPI)
+	}
+
+	return &doc, nil
+}
+
+func sourceToBytes(location string, content any) ([]byte, error) {
+	if content != nil {
+		return openbindings.ContentToBytes(content)
+	}
+	if location == "" {
+		return nil, fmt.Errorf("source must have location or content")
+	}
+	if openbindings.IsHTTPURL(location) {
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+		req, err := http.NewRequestWithContext(ctx, "GET", location, nil)
+		if err != nil {
+			return nil, fmt.Errorf("fetch %q: %w", location, err)
+		}
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			return nil, fmt.Errorf("fetch %q: %w", location, err)
+		}
+		defer func() { _ = resp.Body.Close() }()
+		if resp.StatusCode >= 400 {
+			return nil, fmt.Errorf("fetch %q: HTTP %d", location, resp.StatusCode)
+		}
+		return io.ReadAll(resp.Body)
+	}
+	return os.ReadFile(location)
+}
+
+func isJSON(data []byte) bool {
+	for _, b := range data {
+		switch b {
+		case ' ', '\t', '\n', '\r':
+			continue
+		case '{', '[':
+			return true
+		default:
+			return false
+		}
+	}
+	return false
+}
+
+func operationDescription(op Operation) string {
+	if op.Description != "" {
+		return op.Description
+	}
+	return op.Summary
+}
+
+func resolveOperationPayload(doc *Document, op Operation) map[string]any {
+	if len(op.Messages) > 0 {
+		msg := resolveMessageRef(doc, op.Messages[0])
+		if msg != nil && msg.Payload != nil {
+			return msg.Payload
+		}
+	}
+
+	channelName := extractRefName(op.Channel.Ref)
+	if channelName == "" {
+		return nil
+	}
+	channel, ok := doc.Channels[channelName]
+	if !ok {
+		return nil
+	}
+
+	for _, msg := range channel.Messages {
+		if msg.Payload != nil {
+			return msg.Payload
+		}
+	}
+
+	return nil
+}
+
+func resolveReplyPayload(doc *Document, reply *OperationReply) map[string]any {
+	if reply == nil {
+		return nil
+	}
+
+	if len(reply.Messages) > 0 {
+		msg := resolveMessageRef(doc, reply.Messages[0])
+		if msg != nil && msg.Payload != nil {
+			return msg.Payload
+		}
+	}
+
+	return nil
+}
+
+func resolveMessageRef(doc *Document, ref MessageRef) *Message {
+	if ref.Ref == "" {
+		return nil
+	}
+
+	path := strings.TrimPrefix(ref.Ref, "#/")
+	parts := strings.Split(path, "/")
+
+	if len(parts) == 3 && parts[0] == "components" && parts[1] == "messages" {
+		if doc.Components != nil {
+			if msg, ok := doc.Components.Messages[parts[2]]; ok {
+				return &msg
+			}
+		}
+	}
+
+	if len(parts) == 4 && parts[0] == "channels" && parts[2] == "messages" {
+		if ch, ok := doc.Channels[parts[1]]; ok {
+			if msg, ok := ch.Messages[parts[3]]; ok {
+				return &msg
+			}
+		}
+	}
+
+	return nil
+}
+
+func extractRefName(ref string) string {
+	if ref == "" {
+		return ""
+	}
+	path := strings.TrimPrefix(ref, "#/")
+	parts := strings.Split(path, "/")
+	if len(parts) > 0 {
+		return parts[len(parts)-1]
+	}
+	return ""
+}
