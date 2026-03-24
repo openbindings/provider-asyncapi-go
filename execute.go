@@ -18,11 +18,15 @@ const defaultTimeout = 30 * time.Second
 
 func executeBinding(ctx context.Context, input *openbindings.BindingExecutionInput) *openbindings.ExecuteOutput {
 	start := time.Now()
-
 	doc, err := loadDocument(input.Source.Location, input.Source.Content)
 	if err != nil {
 		return openbindings.FailedOutput(start, "doc_load_failed", err.Error())
 	}
+	return executeBindingWithDoc(ctx, input, doc)
+}
+
+func executeBindingWithDoc(ctx context.Context, input *openbindings.BindingExecutionInput, doc *Document) *openbindings.ExecuteOutput {
+	start := time.Now()
 
 	opID, err := parseRef(input.Ref)
 	if err != nil {
@@ -62,7 +66,10 @@ func subscribeBinding(ctx context.Context, input *openbindings.BindingExecutionI
 	if err != nil {
 		return nil, fmt.Errorf("load document: %w", err)
 	}
+	return subscribeBindingWithDoc(ctx, input, doc)
+}
 
+func subscribeBindingWithDoc(ctx context.Context, input *openbindings.BindingExecutionInput, doc *Document) (<-chan openbindings.StreamEvent, error) {
 	opID, err := parseRef(input.Ref)
 	if err != nil {
 		return nil, fmt.Errorf("parse ref: %w", err)
@@ -119,7 +126,11 @@ func resolveServer(doc *Document, bindCtx *openbindings.BindingContext) (url str
 	if bindCtx != nil && bindCtx.Metadata != nil {
 		if base, ok := bindCtx.Metadata["baseURL"].(string); ok && base != "" {
 			proto := "http"
-			if strings.HasPrefix(base, "wss://") || strings.HasPrefix(base, "ws://") {
+			if strings.HasPrefix(base, "https://") {
+				proto = "https"
+			} else if strings.HasPrefix(base, "wss://") {
+				proto = "wss"
+			} else if strings.HasPrefix(base, "ws://") {
 				proto = "ws"
 			}
 			return strings.TrimRight(base, "/"), proto, nil
@@ -191,7 +202,7 @@ func executeSSESubscribe(ctx context.Context, serverURL, address string, maxEven
 		return openbindings.FailedOutput(start, "request_build_failed", err.Error())
 	}
 	req.Header.Set("Accept", "text/event-stream")
-	openbindings.ApplyHTTPContext(req, input.Context)
+	applyHTTPContext(req, input.Context)
 
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
@@ -247,7 +258,7 @@ func subscribeSSE(ctx context.Context, serverURL, address string, input *openbin
 		return nil, fmt.Errorf("build request: %w", err)
 	}
 	req.Header.Set("Accept", "text/event-stream")
-	openbindings.ApplyHTTPContext(req, input.Context)
+	applyHTTPContext(req, input.Context)
 
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
@@ -331,7 +342,7 @@ func executeHTTPSend(ctx context.Context, serverURL, address string, input *open
 	}
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Accept", "application/json")
-	openbindings.ApplyHTTPContext(req, input.Context)
+	applyHTTPContext(req, input.Context)
 
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
@@ -374,4 +385,31 @@ func parseSSEPayload(dataLines []string) any {
 		return parsed
 	}
 	return raw
+}
+
+// applyHTTPContext applies BindingContext credentials, headers, and cookies to
+// an HTTP request. Each provider is responsible for its own context application.
+func applyHTTPContext(req *http.Request, bindCtx *openbindings.BindingContext) {
+	if bindCtx == nil {
+		return
+	}
+
+	if bindCtx.Credentials != nil {
+		creds := bindCtx.Credentials
+		if creds.BearerToken != "" {
+			req.Header.Set("Authorization", "Bearer "+creds.BearerToken)
+		} else if creds.Basic != nil {
+			req.SetBasicAuth(creds.Basic.Username, creds.Basic.Password)
+		} else if creds.APIKey != "" {
+			req.Header.Set("Authorization", "ApiKey "+creds.APIKey)
+		}
+	}
+
+	for k, v := range bindCtx.Headers {
+		req.Header.Set(k, v)
+	}
+
+	for k, v := range bindCtx.Cookies {
+		req.AddCookie(&http.Cookie{Name: k, Value: v})
+	}
 }

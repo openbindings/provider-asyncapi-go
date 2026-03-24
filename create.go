@@ -24,12 +24,18 @@ func createInterface(_ context.Context, in *openbindings.CreateInput) (*openbind
 		return nil, &openbindings.ExecuteError{Code: "no_sources", Message: "no sources provided"}
 	}
 	src := in.Sources[0]
-
 	doc, err := loadDocument(src.Location, src.Content)
 	if err != nil {
 		return nil, fmt.Errorf("load AsyncAPI document: %w", err)
 	}
+	return createInterfaceWithDoc(nil, in, doc)
+}
 
+func createInterfaceWithDoc(_ context.Context, in *openbindings.CreateInput, doc *Document) (*openbindings.Interface, error) {
+	if len(in.Sources) == 0 {
+		return nil, &openbindings.ExecuteError{Code: "no_sources", Message: "no sources provided"}
+	}
+	src := in.Sources[0]
 	formatVersion := openbindings.DetectFormatVersion(doc.AsyncAPI)
 
 	iface := openbindings.Interface{
