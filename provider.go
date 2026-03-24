@@ -22,8 +22,10 @@ func New() *Provider {
 	}
 }
 
+// cachedLoadDocument loads an AsyncAPI doc, caching by location within a process.
+// When content is provided, the cache is bypassed and updated with the fresh parse.
 func (p *Provider) cachedLoadDocument(location string, content any) (*Document, error) {
-	if location != "" {
+	if location != "" && content == nil {
 		p.mu.RLock()
 		if doc, ok := p.docCache[location]; ok {
 			p.mu.RUnlock()
