@@ -33,8 +33,8 @@ func TestGetContextInfo_HTTPServer(t *testing.T) {
 	if result == nil {
 		t.Fatal("expected non-nil result")
 	}
-	if result.Key != "wss://ws.example.com/v1" {
-		t.Errorf("expected key 'wss://ws.example.com/v1', got %q", result.Key)
+	if result.Key != "wss://ws.example.com" {
+		t.Errorf("expected key 'wss://ws.example.com', got %q", result.Key)
 	}
 	if result.Required {
 		t.Error("AsyncAPI context should not be required by default")

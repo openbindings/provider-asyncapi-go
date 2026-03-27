@@ -6,6 +6,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"sort"
 	"strings"
@@ -15,15 +16,6 @@ import (
 )
 
 const defaultTimeout = 30 * time.Second
-
-func executeBinding(ctx context.Context, input *openbindings.BindingExecutionInput) *openbindings.ExecuteOutput {
-	start := time.Now()
-	doc, err := loadDocument(input.Source.Location, input.Source.Content)
-	if err != nil {
-		return openbindings.FailedOutput(start, "doc_load_failed", err.Error())
-	}
-	return executeBindingWithDoc(ctx, input, doc)
-}
 
 func executeBindingWithDoc(ctx context.Context, input *openbindings.BindingExecutionInput, doc *Document) *openbindings.ExecuteOutput {
 	start := time.Now()
@@ -59,14 +51,6 @@ func executeBindingWithDoc(ctx context.Context, input *openbindings.BindingExecu
 	default:
 		return openbindings.FailedOutput(start, "unsupported_action", fmt.Sprintf("unknown action %q", asyncOp.Action))
 	}
-}
-
-func subscribeBinding(ctx context.Context, input *openbindings.BindingExecutionInput) (<-chan openbindings.StreamEvent, error) {
-	doc, err := loadDocument(input.Source.Location, input.Source.Content)
-	if err != nil {
-		return nil, fmt.Errorf("load document: %w", err)
-	}
-	return subscribeBindingWithDoc(ctx, input, doc)
 }
 
 func subscribeBindingWithDoc(ctx context.Context, input *openbindings.BindingExecutionInput, doc *Document) (<-chan openbindings.StreamEvent, error) {
@@ -192,6 +176,16 @@ func executeSend(ctx context.Context, serverURL, protocol, address string, input
 }
 
 func executeSSESubscribe(ctx context.Context, serverURL, address string, maxEvents int, input *openbindings.BindingExecutionInput, start time.Time) *openbindings.ExecuteOutput {
+	result := doSSESubscribe(ctx, serverURL, address, maxEvents, input, start)
+	if result.Status == http.StatusUnauthorized && result.Error != nil {
+		if resolveAsyncAPIContext(ctx, input, serverURL) {
+			result = doSSESubscribe(ctx, serverURL, address, maxEvents, input, start)
+		}
+	}
+	return result
+}
+
+func doSSESubscribe(ctx context.Context, serverURL, address string, maxEvents int, input *openbindings.BindingExecutionInput, start time.Time) *openbindings.ExecuteOutput {
 	url := serverURL + "/" + strings.TrimLeft(address, "/")
 
 	ctx, cancel := context.WithTimeout(ctx, defaultTimeout)
@@ -358,12 +352,21 @@ func doHTTPSend(ctx context.Context, serverURL, address string, input *openbindi
 	if err != nil {
 		return openbindings.FailedOutput(start, "request_failed", err.Error())
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	duration := time.Since(start).Milliseconds()
 
 	if resp.StatusCode >= 400 {
-		return openbindings.HTTPErrorOutput(start, resp.StatusCode, resp.Status)
+		errOutput := openbindings.HTTPErrorOutput(start, resp.StatusCode, resp.Status)
+		if body, readErr := io.ReadAll(io.LimitReader(resp.Body, 1<<20)); readErr == nil && len(body) > 0 {
+			var parsed any
+			if json.Unmarshal(body, &parsed) == nil {
+				errOutput.Output = parsed
+			} else {
+				errOutput.Output = string(body)
+			}
+		}
+		return errOutput
 	}
 
 	if resp.StatusCode == 202 || resp.StatusCode == 204 {
@@ -373,8 +376,9 @@ func doHTTPSend(ctx context.Context, serverURL, address string, input *openbindi
 		}
 	}
 
+	body, _ := io.ReadAll(io.LimitReader(resp.Body, 10<<20))
 	var output any
-	if err := json.NewDecoder(resp.Body).Decode(&output); err != nil {
+	if len(body) == 0 || json.Unmarshal(body, &output) != nil {
 		return &openbindings.ExecuteOutput{
 			Status:     0,
 			DurationMs: duration,
@@ -408,7 +412,7 @@ func resolveAsyncAPIContext(ctx context.Context, input *openbindings.BindingExec
 	input.Context["bearerToken"] = value
 
 	if input.Store != nil {
-		_ = input.Store.Set(ctx, serverURL, input.Context)
+		_ = input.Store.Set(ctx, openbindings.NormalizeContextKey(serverURL), input.Context)
 	}
 
 	return true

@@ -59,9 +59,9 @@ func (p *Provider) GetContextInfo(_ context.Context, source openbindings.Execute
 		return nil, nil
 	}
 
-	description := doc.Info.Title
-	if description == "" {
-		description = "AsyncAPI service"
+	description := "AsyncAPI service"
+	if doc.Info.Title != "" {
+		description = doc.Info.Title
 	}
 
 	return &openbindings.ContextInfoResult{
@@ -87,7 +87,7 @@ func resolveServerKey(doc *Document) string {
 			if server.PathName != "" {
 				u += server.PathName
 			}
-			return strings.TrimRight(u, "/")
+			return openbindings.NormalizeContextKey(strings.TrimRight(u, "/"))
 		}
 	}
 	return ""
