@@ -9,8 +9,8 @@ import (
 	openbindings "github.com/openbindings/openbindings-go"
 )
 
-// Provider implements BindingExecutor, InterfaceCreator, BindingStreamHandler,
-// and ContextInfoProvider for AsyncAPI 3.x specifications.
+// Provider implements BindingExecutor, InterfaceCreator, and BindingStreamHandler
+// for AsyncAPI 3.x specifications.
 type Provider struct {
 	mu       sync.RWMutex
 	docCache map[string]*Document
@@ -47,30 +47,6 @@ func (p *Provider) cachedLoadDocument(location string, content any) (*Document, 
 	return doc, nil
 }
 
-// GetContextInfo describes the context needed for an AsyncAPI binding.
-func (p *Provider) GetContextInfo(_ context.Context, source openbindings.ExecuteSource, _ string) (*openbindings.ContextInfoResult, error) {
-	doc, err := p.cachedLoadDocument(source.Location, source.Content)
-	if err != nil {
-		return nil, err
-	}
-
-	key := resolveServerKey(doc)
-	if key == "" {
-		return nil, nil
-	}
-
-	description := "AsyncAPI service"
-	if doc.Info.Title != "" {
-		description = doc.Info.Title
-	}
-
-	return &openbindings.ContextInfoResult{
-		Key:         key,
-		Required:    false,
-		Description: description,
-	}, nil
-}
-
 func resolveServerKey(doc *Document) string {
 	serverNames := make([]string, 0, len(doc.Servers))
 	for name := range doc.Servers {
@@ -102,6 +78,27 @@ func (p *Provider) ExecuteBinding(ctx context.Context, in *openbindings.BindingE
 	if err != nil {
 		return nil, err
 	}
+
+	if in.Store != nil {
+		key := resolveServerKey(doc)
+		if key != "" {
+			if stored, sErr := in.Store.Get(ctx, key); sErr == nil && len(stored) > 0 {
+				if len(in.Context) == 0 {
+					in.Context = stored
+				} else {
+					merged := make(map[string]any, len(stored)+len(in.Context))
+					for k, v := range stored {
+						merged[k] = v
+					}
+					for k, v := range in.Context {
+						merged[k] = v
+					}
+					in.Context = merged
+				}
+			}
+		}
+	}
+
 	return executeBindingWithDoc(ctx, in, doc), nil
 }
 
