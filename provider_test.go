@@ -7,7 +7,7 @@ import (
 	openbindings "github.com/openbindings/openbindings-go"
 )
 
-func TestGetContextSchema_HTTPServer(t *testing.T) {
+func TestGetContextInfo_HTTPServer(t *testing.T) {
 	spec := `{
   "asyncapi": "3.0.0",
   "info": { "title": "Chat Service", "version": "1.0.0" },
@@ -22,7 +22,7 @@ func TestGetContextSchema_HTTPServer(t *testing.T) {
 }`
 
 	p := New()
-	result, err := p.GetContextSchema(context.Background(), openbindings.ExecuteSource{
+	result, err := p.GetContextInfo(context.Background(), openbindings.ExecuteSource{
 		Location: "chat.json",
 		Content:  spec,
 	}, "")
@@ -44,7 +44,7 @@ func TestGetContextSchema_HTTPServer(t *testing.T) {
 	}
 }
 
-func TestGetContextSchema_NoHTTPServer(t *testing.T) {
+func TestGetContextInfo_NoHTTPServer(t *testing.T) {
 	spec := `{
   "asyncapi": "3.0.0",
   "info": { "title": "MQTT Service", "version": "1.0.0" },
@@ -58,7 +58,7 @@ func TestGetContextSchema_NoHTTPServer(t *testing.T) {
 }`
 
 	p := New()
-	result, err := p.GetContextSchema(context.Background(), openbindings.ExecuteSource{
+	result, err := p.GetContextInfo(context.Background(), openbindings.ExecuteSource{
 		Location: "mqtt.json",
 		Content:  spec,
 	}, "")
@@ -71,7 +71,7 @@ func TestGetContextSchema_NoHTTPServer(t *testing.T) {
 	}
 }
 
-func TestGetContextSchema_NoServers(t *testing.T) {
+func TestGetContextInfo_NoServers(t *testing.T) {
 	spec := `{
   "asyncapi": "3.0.0",
   "info": { "title": "No Servers", "version": "1.0.0" },
@@ -79,7 +79,7 @@ func TestGetContextSchema_NoServers(t *testing.T) {
 }`
 
 	p := New()
-	result, err := p.GetContextSchema(context.Background(), openbindings.ExecuteSource{
+	result, err := p.GetContextInfo(context.Background(), openbindings.ExecuteSource{
 		Location: "noservers.json",
 		Content:  spec,
 	}, "")
@@ -92,7 +92,7 @@ func TestGetContextSchema_NoServers(t *testing.T) {
 	}
 }
 
-func TestGetContextSchema_MultipleServers_PicksFirst(t *testing.T) {
+func TestGetContextInfo_MultipleServers_PicksFirst(t *testing.T) {
 	spec := `{
   "asyncapi": "3.0.0",
   "info": { "title": "Multi Server", "version": "1.0.0" },
@@ -110,7 +110,7 @@ func TestGetContextSchema_MultipleServers_PicksFirst(t *testing.T) {
 }`
 
 	p := New()
-	result, err := p.GetContextSchema(context.Background(), openbindings.ExecuteSource{
+	result, err := p.GetContextInfo(context.Background(), openbindings.ExecuteSource{
 		Location: "multi.json",
 		Content:  spec,
 	}, "")
@@ -127,7 +127,7 @@ func TestGetContextSchema_MultipleServers_PicksFirst(t *testing.T) {
 	}
 }
 
-func TestGetContextSchema_DefaultDescription(t *testing.T) {
+func TestGetContextInfo_DefaultDescription(t *testing.T) {
 	spec := `{
   "asyncapi": "3.0.0",
   "info": { "title": "", "version": "1.0.0" },
@@ -141,7 +141,7 @@ func TestGetContextSchema_DefaultDescription(t *testing.T) {
 }`
 
 	p := New()
-	result, err := p.GetContextSchema(context.Background(), openbindings.ExecuteSource{
+	result, err := p.GetContextInfo(context.Background(), openbindings.ExecuteSource{
 		Location: "notitle.json",
 		Content:  spec,
 	}, "")

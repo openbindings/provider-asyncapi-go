@@ -38,7 +38,7 @@ func executeBindingWithDoc(ctx context.Context, input *openbindings.BindingExecu
 		return openbindings.FailedOutput(start, "operation_not_found", fmt.Sprintf("operation %q not in AsyncAPI doc", opID))
 	}
 
-	serverURL, protocol, err := resolveServer(doc, input.Context)
+	serverURL, protocol, err := resolveServer(doc, input.Options)
 	if err != nil {
 		return openbindings.FailedOutput(start, "no_server", err.Error())
 	}
@@ -84,7 +84,7 @@ func subscribeBindingWithDoc(ctx context.Context, input *openbindings.BindingExe
 		return nil, fmt.Errorf("streaming not supported for action %q (only receive)", asyncOp.Action)
 	}
 
-	serverURL, protocol, err := resolveServer(doc, input.Context)
+	serverURL, protocol, err := resolveServer(doc, input.Options)
 	if err != nil {
 		return nil, fmt.Errorf("resolve server: %w", err)
 	}
@@ -122,9 +122,9 @@ func parseRef(ref string) (string, error) {
 	return ref, nil
 }
 
-func resolveServer(doc *Document, bindCtx *openbindings.BindingContext) (url string, protocol string, err error) {
-	if bindCtx != nil && bindCtx.Metadata != nil {
-		if base, ok := bindCtx.Metadata["baseURL"].(string); ok && base != "" {
+func resolveServer(doc *Document, opts *openbindings.ExecutionOptions) (url string, protocol string, err error) {
+	if opts != nil && opts.Metadata != nil {
+		if base, ok := opts.Metadata["baseURL"].(string); ok && base != "" {
 			proto := "http"
 			if strings.HasPrefix(base, "https://") {
 				proto = "https"
@@ -202,7 +202,7 @@ func executeSSESubscribe(ctx context.Context, serverURL, address string, maxEven
 		return openbindings.FailedOutput(start, "request_build_failed", err.Error())
 	}
 	req.Header.Set("Accept", "text/event-stream")
-	applyHTTPContext(req, input.Context)
+	applyHTTPContext(req, input.Context, input.Options)
 
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
@@ -258,7 +258,7 @@ func subscribeSSE(ctx context.Context, serverURL, address string, input *openbin
 		return nil, fmt.Errorf("build request: %w", err)
 	}
 	req.Header.Set("Accept", "text/event-stream")
-	applyHTTPContext(req, input.Context)
+	applyHTTPContext(req, input.Context, input.Options)
 
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
@@ -320,6 +320,16 @@ func subscribeSSE(ctx context.Context, serverURL, address string, input *openbin
 }
 
 func executeHTTPSend(ctx context.Context, serverURL, address string, input *openbindings.BindingExecutionInput, start time.Time) *openbindings.ExecuteOutput {
+	result := doHTTPSend(ctx, serverURL, address, input, start)
+	if result.Status == http.StatusUnauthorized && result.Error != nil {
+		if resolveAsyncAPIContext(ctx, input, serverURL) {
+			result = doHTTPSend(ctx, serverURL, address, input, start)
+		}
+	}
+	return result
+}
+
+func doHTTPSend(ctx context.Context, serverURL, address string, input *openbindings.BindingExecutionInput, start time.Time) *openbindings.ExecuteOutput {
 	url := serverURL + "/" + strings.TrimLeft(address, "/")
 
 	ctx, cancel := context.WithTimeout(ctx, defaultTimeout)
@@ -342,7 +352,7 @@ func executeHTTPSend(ctx context.Context, serverURL, address string, input *open
 	}
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Accept", "application/json")
-	applyHTTPContext(req, input.Context)
+	applyHTTPContext(req, input.Context, input.Options)
 
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
@@ -378,6 +388,32 @@ func executeHTTPSend(ctx context.Context, serverURL, address string, input *open
 	}
 }
 
+// resolveAsyncAPIContext prompts for a bearer token on 401 and updates context.
+func resolveAsyncAPIContext(ctx context.Context, input *openbindings.BindingExecutionInput, serverURL string) bool {
+	if input.Callbacks == nil || input.Callbacks.Prompt == nil {
+		return false
+	}
+
+	value, err := input.Callbacks.Prompt(ctx, fmt.Sprintf("Enter bearer token for %s", serverURL), &openbindings.PromptOptions{
+		Label:  "bearerToken",
+		Secret: true,
+	})
+	if err != nil || value == "" {
+		return false
+	}
+
+	if input.Context == nil {
+		input.Context = make(map[string]any)
+	}
+	input.Context["bearerToken"] = value
+
+	if input.Store != nil {
+		_ = input.Store.Set(ctx, serverURL, input.Context)
+	}
+
+	return true
+}
+
 func parseSSEPayload(dataLines []string) any {
 	raw := strings.Join(dataLines, "\n")
 	var parsed any
@@ -387,29 +423,23 @@ func parseSSEPayload(dataLines []string) any {
 	return raw
 }
 
-// applyHTTPContext applies BindingContext credentials, headers, and cookies to
-// an HTTP request. Each provider is responsible for its own context application.
-func applyHTTPContext(req *http.Request, bindCtx *openbindings.BindingContext) {
-	if bindCtx == nil {
-		return
+// applyHTTPContext applies opaque binding context (credentials via well-known
+// fields) and execution options (headers, cookies) to an HTTP request.
+func applyHTTPContext(req *http.Request, bindCtx map[string]any, opts *openbindings.ExecutionOptions) {
+	if token := openbindings.ContextBearerToken(bindCtx); token != "" {
+		req.Header.Set("Authorization", "Bearer "+token)
+	} else if u, p, ok := openbindings.ContextBasicAuth(bindCtx); ok {
+		req.SetBasicAuth(u, p)
+	} else if key := openbindings.ContextAPIKey(bindCtx); key != "" {
+		req.Header.Set("Authorization", "ApiKey "+key)
 	}
 
-	if bindCtx.Credentials != nil {
-		creds := bindCtx.Credentials
-		if creds.BearerToken != "" {
-			req.Header.Set("Authorization", "Bearer "+creds.BearerToken)
-		} else if creds.Basic != nil {
-			req.SetBasicAuth(creds.Basic.Username, creds.Basic.Password)
-		} else if creds.APIKey != "" {
-			req.Header.Set("Authorization", "ApiKey "+creds.APIKey)
+	if opts != nil {
+		for k, v := range opts.Headers {
+			req.Header.Set(k, v)
 		}
-	}
-
-	for k, v := range bindCtx.Headers {
-		req.Header.Set(k, v)
-	}
-
-	for k, v := range bindCtx.Cookies {
-		req.AddCookie(&http.Cookie{Name: k, Value: v})
+		for k, v := range opts.Cookies {
+			req.AddCookie(&http.Cookie{Name: k, Value: v})
+		}
 	}
 }

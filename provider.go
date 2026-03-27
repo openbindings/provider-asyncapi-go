@@ -10,7 +10,7 @@ import (
 )
 
 // Provider implements BindingExecutor, InterfaceCreator, BindingStreamHandler,
-// and ContextSchemaProvider for AsyncAPI 3.x specifications.
+// and ContextInfoProvider for AsyncAPI 3.x specifications.
 type Provider struct {
 	mu       sync.RWMutex
 	docCache map[string]*Document
@@ -47,8 +47,8 @@ func (p *Provider) cachedLoadDocument(location string, content any) (*Document, 
 	return doc, nil
 }
 
-// GetContextSchema describes the context needed for an AsyncAPI binding.
-func (p *Provider) GetContextSchema(_ context.Context, source openbindings.ExecuteSource, _ string) (*openbindings.ContextSchemaResult, error) {
+// GetContextInfo describes the context needed for an AsyncAPI binding.
+func (p *Provider) GetContextInfo(_ context.Context, source openbindings.ExecuteSource, _ string) (*openbindings.ContextInfoResult, error) {
 	doc, err := p.cachedLoadDocument(source.Location, source.Content)
 	if err != nil {
 		return nil, err
@@ -59,18 +59,15 @@ func (p *Provider) GetContextSchema(_ context.Context, source openbindings.Execu
 		return nil, nil
 	}
 
-	builder := openbindings.ContextSchema().OptionalBearer("Bearer token")
-
 	description := doc.Info.Title
 	if description == "" {
 		description = "AsyncAPI service"
 	}
 
-	return &openbindings.ContextSchemaResult{
+	return &openbindings.ContextInfoResult{
 		Key:         key,
 		Required:    false,
 		Description: description,
-		Schema:      builder.Build(),
 	}, nil
 }
 
