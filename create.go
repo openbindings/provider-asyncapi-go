@@ -88,13 +88,11 @@ func createInterfaceWithDoc(_ context.Context, in *openbindings.CreateInput, doc
 
 		switch asyncOp.Action {
 		case "receive":
-			obiOp.Kind = openbindings.OperationKindEvent
 			payload := resolveOperationPayload(doc, asyncOp)
 			if payload != nil {
-				obiOp.Payload = payload
+				obiOp.Output = payload
 			}
 		case "send":
-			obiOp.Kind = openbindings.OperationKindMethod
 			inputPayload := resolveOperationPayload(doc, asyncOp)
 			if inputPayload != nil {
 				obiOp.Input = inputPayload
@@ -105,8 +103,6 @@ func createInterfaceWithDoc(_ context.Context, in *openbindings.CreateInput, doc
 					obiOp.Output = outputPayload
 				}
 			}
-		default:
-			obiOp.Kind = openbindings.OperationKindMethod
 		}
 
 		iface.Operations[opKey] = obiOp
